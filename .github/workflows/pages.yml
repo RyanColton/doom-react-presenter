@@ -1,10 +1,14 @@
-name: Verify and deploy to GitHub Pages
+name: Verify, build and publish the site
+
+# This repository is private, so it cannot serve GitHub Pages on a free plan.
+# The build is pushed to the public RyanColton/doomJavascript repository,
+# which serves https://ryancolton.github.io/doomJavascript/ from its main branch.
 
 on:
   push:
-    branches: [master, react-presenter]
+    branches: [react-presenter]
   pull_request:
-    branches: [master]
+    branches: [react-presenter]
   workflow_dispatch:
 
 permissions:
@@ -29,25 +33,17 @@ jobs:
         run: npm ci
       - name: Verify port and build browser app
         run: npm run verify
-      - name: Upload Pages artifact
+      - name: Add license and site readme to the build
+        run: cp LICENSE.TXT dist/LICENSE.TXT && cp .github/site-README.md dist/README.md
+      - name: Publish build to the public site repository
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v4
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: dist
-
-  deploy:
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}
+          external_repository: RyanColton/doomJavascript
+          publish_branch: main
+          publish_dir: ./dist
+          force_orphan: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'Publish build from ${{ github.sha }}'
