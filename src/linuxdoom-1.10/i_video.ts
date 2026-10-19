@@ -1,22 +1,27 @@
 // Copyright (C) 1993-1996 id Software, Inc. GPL-2.0-only.
-// Browser platform implementation: replaces X11 indexed visual with Canvas ImageData.
+// Browser platform implementation: replaces X11 indexed visual with an RGBA frame
+// handed to a swappable Presenter (Canvas, React, ...). The host element only
+// provides focus and pointer lock; the presenter owns whatever DOM it draws with.
 import { SCREENWIDTH, SCREENHEIGHT, KEY_RIGHTARROW, KEY_LEFTARROW, KEY_UPARROW, KEY_DOWNARROW,
     KEY_ESCAPE, KEY_ENTER, KEY_TAB, KEY_BACKSPACE, KEY_RSHIFT, KEY_RCTRL, KEY_RALT, KEY_PAUSE } from './doomdef.h';
 import { evtype_t } from './d_event.h';
 import type { event_t } from './d_event.h';
 import { screens, gammatable, usegamma } from './v_video';
 import { I_Error } from './i_system';
-let context: CanvasRenderingContext2D | null = null;
-let image: ImageData;
+export interface Presenter {
+    mount(host: HTMLElement, width: number, height: number): void;
+    present(frame: Uint8ClampedArray<ArrayBuffer>): void; // RGBA, width*height*4, shared across frames
+    dispose(): void;
+}
+let host: HTMLElement | null = null;
+let presenter: Presenter | null = null;
+const frame = new Uint8ClampedArray(SCREENWIDTH * SCREENHEIGHT * 4);
 let dispose: (() => void) | null = null;
 const palette = new Uint8Array(768);
 const pending: event_t[] = [];
-export function I_InitGraphics(canvas: HTMLCanvasElement): void {
+export function I_InitGraphics(canvas: HTMLElement): void {
     I_ShutdownGraphics();
-    canvas.width = SCREENWIDTH; canvas.height = SCREENHEIGHT;
-    context = canvas.getContext('2d', { alpha: false });
-    if (!context) I_Error('Canvas 2D unavailable');
-    image = context.createImageData(SCREENWIDTH, SCREENHEIGHT);
+    host = canvas;
     for (let i = 0; i < 256; i++) palette.fill(i, i * 3, i * 3 + 3);
     const keys: Record<string, number> = {
         ArrowRight: KEY_RIGHTARROW, ArrowLeft: KEY_LEFTARROW, ArrowUp: KEY_UPARROW, ArrowDown: KEY_DOWNARROW,
@@ -58,22 +63,29 @@ export function I_InitGraphics(canvas: HTMLCanvasElement): void {
         window.removeEventListener('blur', release); canvas.removeEventListener('blur', release);
     };
 }
-export function I_ShutdownGraphics(): void { dispose?.(); dispose = null; context = null; pending.length = 0; }
+export function I_ShutdownGraphics(): void { dispose?.(); dispose = null; presenter?.dispose(); presenter = null; host = null; pending.length = 0; }
+export function I_SetPresenter(next: Presenter | null): void {
+    if (!host) I_Error('I_SetPresenter before I_InitGraphics');
+    presenter?.dispose();
+    presenter = next;
+    presenter?.mount(host, SCREENWIDTH, SCREENHEIGHT);
+    presenter?.present(frame); // show the last frame immediately, even while paused
+}
 export function I_SetPalette(pal: Uint8Array): void {
     if (pal.length < 768) I_Error('PLAYPAL must contain at least 768 bytes');
     palette.set(pal.subarray(0, 768));
 }
 export function I_FinishUpdate(): void {
-    if (!context) return;
+    if (!host) return;
     const gamma = gammatable[usegamma];
     for (let i = 0; i < screens[0].length; i++) {
         const color = screens[0][i] * 3, dest = i * 4;
-        image.data[dest] = gamma[palette[color]];
-        image.data[dest + 1] = gamma[palette[color + 1]];
-        image.data[dest + 2] = gamma[palette[color + 2]];
-        image.data[dest + 3] = 255;
+        frame[dest] = gamma[palette[color]];
+        frame[dest + 1] = gamma[palette[color + 1]];
+        frame[dest + 2] = gamma[palette[color + 2]];
+        frame[dest + 3] = 255;
     }
-    context.putImageData(image, 0, 0);
+    presenter?.present(frame);
 }
 export function I_ReadScreen(scr: Uint8Array): void { scr.set(screens[0]); }
 export function I_StartTic(): event_t[] { return pending.splice(0); }

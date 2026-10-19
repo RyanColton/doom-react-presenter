@@ -129,3 +129,49 @@ Los mensajes de recogidas y puertas usan ahora `hu_stuff.c`/`hu_lib.c`: se dibuj
 Pulsa **Tab** durante la partida para abrir el automapa original (`am_map.c`). **F** activa/desactiva seguimiento, **flechas** desplazan al desactivarlo, **= / −** regulan zoom, **0** cambia a vista amplia, **G** muestra la cuadrícula, **M** coloca una de diez marcas y **C** las borra. Las líneas se descubren mediante el render original; el título, la barra y los mensajes se mantienen visibles. La simulación continúa hasta pulsar Pausa/Esc.
 
 Los trucos de `ST_Responder` funcionan escribiéndolos con la pantalla enfocada: `iddqd`, `idfa`, `idkfa`, `idclip`/`idspispopd`, `idbehold` y sus sufijos, `idchoppers`, `idmypos`, `idmus11` e `idclev12`. `iddt` en el automapa cicla líneas/actores. El cambio de nivel se aplica en el siguiente tic y comprueba que el mapa esté cargado. Se conserva la errata original que rechaza todos los IDCLEV comerciales (Doom II); puedes elegir esos mapas con el selector web. Los trucos también conservan sus efectos y peculiaridades originales, incluidos los poderes de un tic de CHOPPERS.
+
+## React presenter POC (branch `react-presenter`)
+
+`src/linuxdoom-1.10/i_video.ts` no longer draws to a canvas directly. `I_FinishUpdate`
+converts `screens[0]` through the palette into an RGBA frame and hands it to a
+swappable `Presenter` (`mount` / `present` / `dispose`). The `#screen` element is
+a plain focusable `<div>` that only provides keyboard focus, pointer lock and
+fullscreen; the presenter owns whatever DOM it draws with.
+
+- `src/web/presenters/canvas-presenter.ts` – the original `putImageData` path.
+- `src/web/presenters/react-presenter.tsx` – React 19, six strategies:
+  - **rows**: 200 scanline `<div>`s with run-length-encoded `linear-gradient`
+    backgrounds. React reconciles 200 style strings per frame. Playable, 100+ fps.
+  - **declarative**: the most React-idiomatic version. Each frame is an immutable
+    snapshot passed top-down as props via `root.render` inside `startTransition`,
+    so React time-slices the render and drops stale frames itself. Scanlines are
+    `memo` components with a content comparator; each renders one keyed `<span>`
+    per colour run, so the reconciler diffs the image. Context carries geometry.
+    Tuned with: shared immutable run elements (React bails out on identical element
+    objects), a layout-effect commit handoff, scanlines as compositor layers with
+    `contain:strict`, and the `react-dom/profiling` build so `<Profiler>` reports
+    render time in production. 120 fps idle, ~40 fps walking, ~10 fps turning; the
+    game keeps ticking at 35 Hz because the transition yields to the engine loop.
+    The ceiling is the browser styling, laying out and painting 30-50k spans.
+  - **declarative-lossy**: the declarative renderer with lossy run merging. A pixel
+    joins the current run while within an RGB distance (tolerance 32) of the run's
+    first colour, and runs narrower than 2 px are absorbed by the closer-coloured
+    neighbour, but only when that neighbour is within 2x tolerance, so one-pixel
+    high-contrast detail (status bar digits, edges) survives. Spans drop from ~35k
+    to ~7k while turning and the frame rate goes from ~10 to ~115 fps. Tolerance
+    alone smears textures at 48+; unguarded min-width destroys the HUD. Override
+    via `window.doomLossyOptions={tolerance,minWidth}` before selecting it.
+  - **pixels**: 64,000 `<div>`s, parent re-renders every frame, memo skips unchanged
+    pixels. The literal version. ~10 fps while moving.
+  - **pixels-ref**: 64,000 `<div>`s under 200 row components. The presenter diffs
+    the frame and only notifies changed pixels; each pixel writes its colour to its
+    own node through a ref, so React is not in the per-frame loop. Rows are
+    compositor layers. 120 fps idle, ~14 fps turning. The limit is the browser
+    repainting 64,000 boxes, not React.
+  - **dom-pixels**: the same 64,000 `<div>`s written directly with no React, as the
+    floor for comparison.
+
+The **Renderer** dropdown in the display footer hot-swaps presenters mid-game;
+the readout shows fps, `present()` time per frame and changed pixels. Judge speed
+on a production build (`npm run build && npx vite preview`): development-mode
+React is about 4x slower on the per-pixel strategies.

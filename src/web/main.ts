@@ -9,7 +9,9 @@ import { I_InstallSoundBackend,I_InitSound,I_ShutdownSound,I_InstallMusicBackend
 import { S_Init,S_StartSound,S_StopSound,S_SetSfxVolume,S_SetMusicVolume,S_GetMusicState } from '../linuxdoom-1.10/s_sound';
 import { S_sfx } from '../linuxdoom-1.10/sounds';
 import { V_Init, V_DrawPatch, V_PatchHeader, V_SetGamma, usegamma, screens } from '../linuxdoom-1.10/v_video';
-import { I_InitGraphics, I_SetPalette, I_FinishUpdate, I_ShutdownGraphics } from '../linuxdoom-1.10/i_video';
+import { I_InitGraphics, I_SetPalette, I_FinishUpdate, I_ShutdownGraphics, I_SetPresenter, type Presenter } from '../linuxdoom-1.10/i_video';
+import { CanvasPresenter } from './presenters/canvas-presenter';
+import { ReactPresenter } from './presenters/react-presenter';
 import { W_InitMultipleFiles, W_CacheLumpName, W_CheckNumForName, W_NumLumps } from '../linuxdoom-1.10/w_wad';
 import { wipe_StartScreen, wipe_EndScreen, wipe_ScreenWipe } from '../linuxdoom-1.10/f_wipe';
 import { listMaps, loadMapPreview, drawMapPreview } from './map-preview';
@@ -37,7 +39,7 @@ function element<T extends HTMLElement>(id: string): T {
     if (!node) throw new Error(`Missing element #${id}`);
     return node as T;
 }
-const canvas = element<HTMLCanvasElement>('screen'), input = element<HTMLInputElement>('wad');
+const screenHost = element<HTMLElement>('screen'), input = element<HTMLInputElement>('wad');
 const status = element<HTMLParagraphElement>('status'), mapSelect = element<HTMLSelectElement>('maps');
 const viewSelect = element<HTMLSelectElement>('view'), label = element('display-label');
 const wipeButton = element<HTMLButtonElement>('wipe'), demoButton = element<HTMLButtonElement>('demo');
@@ -63,7 +65,28 @@ let loaded = false, animating = false, loadGeneration = 0, syntheticData = false
 let remoteController:AbortController|null=null;
 function cancelRemote():void {remoteController?.abort();remoteController=null;}
 let lastView = new Uint8Array(320 * 200), animation = 0;
-V_Init(); I_InitGraphics(canvas);
+V_Init(); I_InitGraphics(screenHost);
+// Presenters are hot-swappable: the engine keeps writing screens[0], I_FinishUpdate
+// converts it to RGBA, and whichever presenter is mounted puts it on screen.
+// present() time is measured here so the two paths can be compared live.
+const presentStats={presentMs:0,frames:0,changedPixels:0,renderedFrames:-1,renderMs:-1,commitLatencyMs:-1};let activePresenter:Presenter|null=null;
+function timed(inner:Presenter):Presenter {
+    return {mount:(h,w,ht)=>inner.mount(h,w,ht),dispose:()=>inner.dispose(),present:f=>{const t=performance.now();inner.present(f);const ms=performance.now()-t;presentStats.presentMs=presentStats.frames===0?ms:presentStats.presentMs*0.9+ms*0.1;presentStats.frames++;const withStats=activePresenter as unknown as {stats?:{changedPixels:number;renderedFrames?:number;renderMs?:number;commitLatencyMs?:number}};if(withStats?.stats){presentStats.changedPixels=withStats.stats.changedPixels;presentStats.renderedFrames=withStats.stats.renderedFrames??-1;presentStats.renderMs=withStats.stats.renderMs??-1;presentStats.commitLatencyMs=withStats.stats.commitLatencyMs??-1;}}};
+}
+const PRESENTERS:Record<string,()=>Presenter>={'react-rows':()=>new ReactPresenter('rows'),'react-declarative':()=>new ReactPresenter('declarative'),'react-declarative-lossy':()=>new ReactPresenter('declarative-lossy'),'react-pixels-ref':()=>new ReactPresenter('pixels-ref'),'react-pixels':()=>new ReactPresenter('pixels'),'dom-pixels':()=>new ReactPresenter('dom-pixels'),canvas:()=>new CanvasPresenter()};
+const rendererSelect=element<HTMLSelectElement>('renderer'),presentStatsLabel=element('present-stats');
+function selectPresenter(name:string):void {const make=PRESENTERS[name];if(!make)throw new Error(`Renderer desconocido: ${name}`);presentStats.presentMs=0;presentStats.frames=0;presentStats.changedPixels=0;presentStats.renderedFrames=-1;activePresenter=make();I_SetPresenter(timed(activePresenter));}
+selectPresenter(rendererSelect.value);
+rendererSelect.addEventListener('change',()=>{selectPresenter(rendererSelect.value);screenHost.focus();});
+let fpsFrames=0,fpsRendered=0,fpsTime=performance.now();
+setInterval(()=>{
+    const now=performance.now(),seconds=(now-fpsTime)/1000,fps=(presentStats.frames-fpsFrames)/seconds;
+    // Presenters that let React schedule asynchronously report how many frames React actually committed.
+    const rendered=presentStats.renderedFrames>=0?` · react ${((presentStats.renderedFrames-fpsRendered)/seconds).toFixed(0)} fps${presentStats.renderMs>=0?` · render ${presentStats.renderMs.toFixed(1)} ms`:''}${presentStats.commitLatencyMs>=0?` · react total ${presentStats.commitLatencyMs.toFixed(1)} ms`:''}`:'';
+    fpsFrames=presentStats.frames;fpsRendered=Math.max(0,presentStats.renderedFrames);fpsTime=now;
+    presentStatsLabel.textContent=presentStats.frames?`${fps.toFixed(0)} fps${rendered} · present ${presentStats.presentMs.toFixed(2)} ms${presentStats.changedPixels?` · ${presentStats.changedPixels} px changed`:''}`:'';
+},500);
+(window as unknown as {doomPresentStats:typeof presentStats}).doomPresentStats=presentStats;
 const worldPreview = new WorldPreview(() => { lastView = screens[0].slice(); }, error => report(error instanceof Error ? error.message : String(error),true));
 
 const normalGameHelp=element('game-help').textContent;
@@ -101,7 +124,7 @@ const browserGame=new BrowserGame(session=>{
         const button=element<HTMLButtonElement>('next-level');button.hidden=finale&&(session.state.gamemode!==MODE.commercial||fs?.stage===2);
         button.disabled=(!counting&&!result.terminal&&!session.nextAvailable)||wi?.state===WI.NoState;
         button.textContent=finale&&result.terminal?'Ver reparto':counting?'Completar recuento':result.terminal?'Finalizar':entering?`Entrar en ${next}`:`Continuar a ${next}`;
-        if(focusCompletion){focusCompletion=false;const target=finale||wi?.drawable?canvas:summary;target.scrollIntoView({block:'nearest'});target.focus({preventScroll:true});}
+        if(focusCompletion){focusCompletion=false;const target=finale||wi?.drawable?screenHost:summary;target.scrollIntoView({block:'nearest'});target.focus({preventScroll:true});}
     }
     if(gameHud.textContent!==text)gameHud.textContent=text;
     element('game-pause').textContent=browserGame.paused?'Continuar':'Pausa';
@@ -111,7 +134,7 @@ const browserGame=new BrowserGame(session=>{
 },error=>report(error instanceof Error?error.message:String(error),true),{
     setVolumes:(effects,music)=>{soundVolume.value=String(effects);musicVolume.value=String(music);},returnToInspection:()=>queueMicrotask(()=>{gameStartGeneration++;playing=false;render();}),
     resetStatus:()=>{gameHud.textContent='Iniciando jugador…';},resetMessages:()=>{gameMessage.textContent='';},
-    closeAutomap:()=>{viewSelect.value='world';},tactile:()=>{if(!ST_IsRunning())canvas.animate([{opacity:0.6},{opacity:1}],{duration:180});},
+    closeAutomap:()=>{viewSelect.value='world';},tactile:()=>{if(!ST_IsRunning())screenHost.animate([{opacity:0.6},{opacity:1}],{duration:180});},
     onExit:secret=>{focusCompletion=true;gameMessage.textContent=secret?'Salida secreta.':'Nivel completado.';}
 });
 function report(message: string, error = false): void { status.textContent = message; status.classList.toggle('error', error); }
@@ -258,17 +281,17 @@ viewSelect.addEventListener('change', () => safely(()=>{gameStartGeneration++;pl
 textureSelect.addEventListener('change', () => safely(()=>{gameStartGeneration++;playing=false;render();}));
 element('game-start').addEventListener('click',async()=>{
     const generation=++gameStartGeneration;
-    try {await audio.resume();if(generation!==gameStartGeneration)return;playing=true;render();canvas.focus();}
+    try {await audio.resume();if(generation!==gameStartGeneration)return;playing=true;render();screenHost.focus();}
     catch(error){if(generation!==gameStartGeneration)return;playing=false;browserGame.stop();report(error instanceof Error?error.message:String(error),true);}
 });
 summary.addEventListener('keydown',event=>{if(event.target===summary&&!event.repeat&&[' ','f','F','Control'].includes(event.key)){event.preventDefault();browserGame.continueLevel();}});
-element('next-level').addEventListener('click',()=>safely(()=>{browserGame.continueLevel();canvas.focus();}));
+element('next-level').addEventListener('click',()=>safely(()=>{browserGame.continueLevel();screenHost.focus();}));
 element('game-stop').addEventListener('click',()=>safely(()=>{gameStartGeneration++;playing=false;render();}));
-element('game-mouse').addEventListener('click',async()=>{try{canvas.focus();await canvas.requestPointerLock();}catch{report('Este navegador no permite capturar el ratón. Puedes seguir jugando con el teclado.',true);}});
+element('game-mouse').addEventListener('click',async()=>{try{screenHost.focus();await screenHost.requestPointerLock();}catch{report('Este navegador no permite capturar el ratón. Puedes seguir jugando con el teclado.',true);}});
 let mouseCaptured=false;
-document.addEventListener('pointerlockchange',()=>{const captured=document.pointerLockElement===canvas;element('game-mouse').textContent=captured?'Ratón activo · Esc libera':'Activar ratón';if(mouseCaptured&&!captured&&playing)browserGame.openMenu();mouseCaptured=captured;});
-element('game-menu').addEventListener('click',()=>{browserGame.openMenu();canvas.focus();});
-element('game-pause').addEventListener('click',()=>{browserGame.togglePause();canvas.focus();});
+document.addEventListener('pointerlockchange',()=>{const captured=document.pointerLockElement===screenHost;element('game-mouse').textContent=captured?'Ratón activo · Esc libera':'Activar ratón';if(mouseCaptured&&!captured&&playing)browserGame.openMenu();mouseCaptured=captured;});
+element('game-menu').addEventListener('click',()=>{browserGame.openMenu();screenHost.focus();});
+element('game-pause').addEventListener('click',()=>{browserGame.togglePause();screenHost.focus();});
 element('camera-left').addEventListener('click', () => safely(() => worldPreview.nudge(97)));
 element('camera-forward').addEventListener('click', () => safely(() => worldPreview.nudge(119)));
 element('camera-right').addEventListener('click', () => safely(() => worldPreview.nudge(100)));
@@ -276,7 +299,7 @@ element('camera-reset').addEventListener('click', () => safely(() => worldPrevie
 element<HTMLButtonElement>('gamma').addEventListener('click', () => {
     V_SetGamma(usegamma + 1); element('gamma').textContent = `Gamma: ${usegamma}`; I_FinishUpdate();
 });
-element('fullscreen').addEventListener('click', () => { canvas.requestFullscreen().catch(() => report('Pantalla completa no disponible en este navegador', true)); });
+element('fullscreen').addEventListener('click', () => { screenHost.requestFullscreen().catch(() => report('Pantalla completa no disponible en este navegador', true)); });
 wipeButton.addEventListener('click', () => safely(() => {
     if (!loaded || animating) return;
     lastView = screens[0].slice();
