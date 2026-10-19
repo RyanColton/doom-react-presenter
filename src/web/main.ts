@@ -105,7 +105,7 @@ const browserGame=new BrowserGame(session=>{
     element('frame-state').textContent=fs?`Final original · ${fs.stage===0?'texto':fs.stage===1?'imagen de episodio':'reparto'}${fs.drawable?'':' · recursos gráficos ausentes'}`:session.completed?`Intermisión · ${wi?.drawable?'gráficos originales del WAD':'resumen HTML'} · 35 tics/s`:`Partida · ${ST_IsRunning()?'barra del WAD':'HUD textual'} · 35 tics/s`;
     element<HTMLButtonElement>('game-pause').disabled=session.completed;
     if(result){
-        element('level-summary-title').textContent=`${result.mapname} · ${result.terminal?(session.state.gamemode===MODE.commercial?'Fin de campaña':'Fin de episodio'):result.secret?'Salida secreta':'Nivel completado'}`;
+        element('level-summary-title').textContent=`${result.mapname} · ${result.terminal?(session.state.gamemode===MODE.commercial?'Campaign complete':'Episode complete'):result.secret?'Secret exit':'Level complete'}`;
         const score=(value:number,total:number,count:number)=>`${value} / ${total} · ${count<0?'—':`${count}%`}`;
         element('result-kills').textContent=score(result.kills,result.maxkills,wi?.kills??Math.trunc(100*result.kills/Math.max(1,result.maxkills)));
         element('result-items').textContent=score(result.items,result.maxitems,wi?.items??Math.trunc(100*result.items/Math.max(1,result.maxitems)));
@@ -114,13 +114,13 @@ const browserGame=new BrowserGame(session=>{
         element('result-time').textContent=time(wi?.time??Math.trunc(result.tics/35));
         element('result-par').textContent=wi?time(wi.par):'—';
         element('finale-caption').hidden=!fs;element('finale-text').hidden=!fs||fs.drawable;
-        if(fs){element('finale-caption').textContent=fs.stage===2?`Reparto: ${fs.castName}. Pulsa una tecla para ver su animación de muerte.`:fs.stage===0?'El texto aparece con los tiempos originales.':'Fin del episodio. Puedes reiniciar o elegir otro mapa.';
+        if(fs){element('finale-caption').textContent=fs.stage===2?`Cast: ${fs.castName}. Press a key to see its death animation.`:fs.stage===0?'The text appears with the original timing.':'End of the episode. Restart or pick another map.';
             element('finale-text').textContent=fs.drawable?'':`${fs.stage===0?fs.visibleText:fs.stage===2?fs.castName:'Imagen final'}\n\nFaltan recursos gráficos del final en este WAD.`;}
         const next=session.nextMapName,finale=session.state.gamestate===GS.GS_FINALE;
         const counting=!!wi&&wi.state===WI.StatCount&&wi.sp_state!==10;
         const entering=!!wi&&wi.state!==WI.StatCount;
-        element('intermission-help').textContent=finale?(session.state.gamemode===MODE.commercial?(fs?.stage===2?'Pulsa una tecla en la pantalla para animar el reparto.':'F o Espacio: avanzar después de la pausa inicial.'):'El final avanza automáticamente al terminar el texto.'):counting?'F o Espacio: completar el recuento.':!result.terminal&&!session.nextAvailable?'Falta el mapa de destino.':entering?(result.terminal?'Preparando el final…':'Preparando el siguiente mapa…'):'F o Espacio: avanzar.';
-        element('next-map').textContent=result.terminal?'Puedes reiniciar o elegir otro mapa.':session.nextAvailable?`${finale?'Fin de tramo. ':''}Siguiente mapa: ${next}`:`El mapa ${next} no está cargado. Selecciona un WAD que lo incluya para jugarlo.`;
+        element('intermission-help').textContent=finale?(session.state.gamemode===MODE.commercial?(fs?.stage===2?'Press a key on the screen to animate the cast.':'F or Space: continue after the initial pause.'):'The finale advances on its own when the text ends.'):counting?'F or Space: finish the tally.':!result.terminal&&!session.nextAvailable?'The destination map is missing.':entering?(result.terminal?'Preparing the finale…':'Preparing the next map…'):'F or Space: continue.';
+        element('next-map').textContent=result.terminal?'Restart or pick another map.':session.nextAvailable?`${finale?'End of section. ':''}Next map: ${next}`:`Map ${next} is not loaded.`;
         const button=element<HTMLButtonElement>('next-level');button.hidden=finale&&(session.state.gamemode!==MODE.commercial||fs?.stage===2);
         button.disabled=(!counting&&!result.terminal&&!session.nextAvailable)||wi?.state===WI.NoState;
         button.textContent=finale&&result.terminal?'Ver reparto':counting?'Completar recuento':result.terminal?'Finalizar':entering?`Entrar en ${next}`:`Continuar a ${next}`;
@@ -155,7 +155,7 @@ function render(): void {
     stopWipe(); worldPreview.stop();browserGame.stop();musicStatus.textContent='Música detenida · pulsa Jugar para escuchar el tema del nivel.';summary.hidden=true;focusCompletion=false;
     element('camera-help').hidden = playing||viewSelect.value !== 'world'; element('camera-buttons').hidden = playing||viewSelect.value !== 'world'; element('camera-reset').hidden = playing||viewSelect.value !== 'world';
     for(const id of ['game-buttons','game-help','game-hud','game-message'])element(id).hidden=!playing;
-    element('game-start').textContent=playing?'Reiniciar partida':'Jugar este mapa';
+    element('game-start').textContent=playing?'Restart':'Play';
     wipeButton.disabled = playing||viewSelect.value === 'world';
     if (!loaded) return;
     if (playing||viewSelect.value === 'world') {
@@ -235,18 +235,18 @@ function load(files: WadFile[], synthetic: boolean): void {
     mapSelect.disabled = maps.length === 0;element<HTMLButtonElement>('game-start').disabled=maps.length===0;
     if (!maps.length) mapSelect.add(new Option('Sin mapas', ''));
     viewSelect.value = maps.length ? 'world' : 'title';
-    report(`${synthetic ? 'Datos sintéticos de prueba' : files.map(f => f.name).join(' + ')} · ${W_NumLumps().toLocaleString('es')} recursos · ${maps.length} ${maps.length === 1 ? 'mapa' : 'mapas'}`);
+    report(`${synthetic ? 'Synthetic test data' : files.map(f => f.name).join(' + ')} · ${W_NumLumps().toLocaleString('en')} lumps · ${maps.length} ${maps.length === 1 ? 'map' : 'maps'}`);
     render();
     if (synthetic && viewSelect.value === 'title') { label.textContent = 'PRUEBA DE VÍDEO / SIN DATOS COMERCIALES'; }
 }
 function selectInitialMap(map:string|null):void {
     if(!map)return;
     const option=Array.from(mapSelect.options).find(option=>option.textContent===map);
-    if(option){mapSelect.value=option.value;render();}else report(`El WAD no contiene ${map}. Se muestra el primer mapa disponible.`,true);
+    if(option){mapSelect.value=option.value;render();}else report(`The WAD has no ${map}. Showing the first available map.`,true);
 }
 async function loadRemoteSources(urls:string[],map:string|null=null):Promise<void> {
     cancelRemote();const generation=++loadGeneration,controller=new AbortController();remoteController=controller;
-    const timeout=setTimeout(()=>controller.abort(),30000);report('Descargando WAD…');
+    const timeout=setTimeout(()=>controller.abort(),30000);report('Downloading WAD…');
     try {
         const files=await Promise.all(urls.map(url=>fetchRemoteWad(url,controller.signal)));
         if(generation!==loadGeneration)return;
@@ -256,15 +256,15 @@ async function loadRemoteSources(urls:string[],map:string|null=null):Promise<voi
         if(generation!==loadGeneration)return;
         // Restore valid engine resources even when a remote WAD could not initialize.
         load([{name:'test.wad',data:playableDemoWad(true)}],true);
-        const message=controller.signal.aborted?'La descarga agotó el tiempo de espera.':error instanceof TypeError?'No se pudo descargar el WAD. Comprueba el enlace y que el servidor permita CORS.':error instanceof Error?error.message:String(error);
-        report(`${message} Se muestran los datos sintéticos de prueba.`,true);
+        const message=controller.signal.aborted?'The download timed out.':error instanceof TypeError?'Could not download the WAD. Check the link and that the server allows CORS.':error instanceof Error?error.message:String(error);
+        report(`${message} Showing synthetic test data.`,true);
     }finally {clearTimeout(timeout);controller.abort();if(remoteController===controller)remoteController=null;}
 }
 input.addEventListener('change', async () => {
     const selected = Array.from(input.files ?? []);
     if (!selected.length) return;
     cancelRemote();const generation = ++loadGeneration;
-    report('Leyendo archivos…');
+    report('Reading files…');
     try {
         const files = await Promise.all(selected.map(async file => ({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) })));
         if (generation !== loadGeneration) return;
