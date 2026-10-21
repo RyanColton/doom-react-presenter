@@ -11,7 +11,7 @@
 <div class="controls-bar">
 <label class="control">Map <select id="maps" disabled></select></label>
 <button id="game-start" type="button" disabled>Play</button>
-<label class="control">Renderer <select id="renderer"><option value="react-rows" selected>React · row gradients</option><option value="react-declarative">React · declarative</option><option value="react-declarative-lossy">React · declarative, lossy</option><option value="react-pixels-ref">React · per pixel, optimized</option><option value="react-pixels">React · per pixel, naive</option><option value="dom-pixels">Raw JS · per pixel</option><option value="canvas">Canvas · original</option></select></label>
+<label class="control">Renderer <select id="renderer"><option value="react-pixels-individual" selected>React · per pixel (individual updates)</option><option value="react-pixels-rows">React · per pixel (row updates)</option><option value="react-declarative">React · declarative</option><option value="react-rows">React · row gradients</option></select></label>
 </div>
 <p id="status" class="status" role="status" aria-live="polite">Downloading DOOM shareware…</p>
 <p class="hint">Click the screen to play. W/S move · A/D turn · Q/E strafe · F use · Space fire · 1–7 weapons · Tab map · Esc menu</p>

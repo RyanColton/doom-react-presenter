@@ -4,3 +4,4 @@ original/.git/
 *.wad
 *.WAD
 .DS_Store
+.idea/

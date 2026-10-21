@@ -1,31 +1,27 @@
-import React, { createContext, memo, Profiler, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import React, { createContext, memo, Profiler, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
 // The profiling entry keeps <Profiler> live in production so the declarative presenter can report render time.
 import { createRoot, type Root } from 'react-dom/profiling';
 import type { Presenter } from '../../linuxdoom-1.10/i_video';
 // React presenter. Strategies for turning the 320x200 RGBA frame into DOM:
-//   rows        - 200 <div>s, one per scanline, background = run-length-encoded linear-gradient.
-//                 React reconciles 200 style strings per frame. Playable (100+ fps).
-//   pixels      - 64,000 <div>s, one per pixel. The parent re-renders every frame and React
-//                 diffs every element; memo skips the DOM write for unchanged pixels.
-//                 The literal version of the idea (~10 fps moving).
-//   pixels-ref  - 64,000 <div>s under 200 row components. The presenter diffs the frame
-//                 itself and only notifies pixels whose colour changed; each pixel writes
-//                 the colour straight to its own DOM node through a ref, so React is not
-//                 in the per-frame loop (the pattern animation libraries use). Rows are
-//                 compositor layers so idle repaints are cheap. 120 fps idle, ~14 fps turning.
-//   dom-pixels  - diagnostic floor: the same 64,000 <div>s written directly with no React.
-//                 Shows what the browser alone costs for one element per pixel.
-//   declarative - the most React-idiomatic version. Each frame is an immutable snapshot
-//                 passed top-down as props through root.render inside startTransition, so
-//                 React schedules, time-slices and drops frames itself. Scanlines are memo
-//                 components with a content comparator; each renders one keyed <span> per
-//                 colour run, so the reconciler is literally diffing the image. Context
-//                 carries screen geometry. Playable, but React does all the work.
-//   declarative-lossy - the same, but runs are merged lossily (colour tolerance plus a
-//                 minimum run width) to cut the span count, trading texture detail for fps.
-export type ReactStrategy='rows'|'pixels'|'pixels-ref'|'dom-pixels'|'declarative'|'declarative-lossy';
-export interface LossyOptions {tolerance:number;minWidth:number}
+//   declarative - the default and the most React-idiomatic. Each frame is an immutable
+//                 snapshot passed top-down as props through root.render inside
+//                 startTransition, so React schedules, time-slices and drops frames itself.
+//                 Scanlines are memo components with a content comparator; each renders one
+//                 keyed <span> per colour run, so the reconciler is literally diffing the
+//                 image. Context carries screen geometry. ~120 fps idle, ~10 fps turning.
+//   rows        - 200 <div>s, one per scanline, each a component holding its background in
+//                 React state: a run-length-encoded linear-gradient. The presenter diffs rows
+//                 and calls the setters of changed rows inside flushSync. 120 fps.
+//   pixels-individual - 64,000 pixel <div>s, each a component holding its colour in React
+//                 state. The presenter diffs the frame and calls the setter of every changed
+//                 pixel inside a transition: ~40,000 scheduled updates per frame while turning.
+//                 ~6-8 commits/s turning.
+//   pixels-rows - the same 64,000 pixel <div>s, but the 200 row components hold the colours.
+//                 The presenter calls the setter of every changed row; React reconciles that
+//                 row's 320 pixel elements, bailing out of unchanged ones by element identity.
+//                 ~200 scheduled updates per frame. ~9-10 commits/s turning, game loop ~50 fps.
+export type ReactStrategy='pixels-individual'|'pixels-rows'|'declarative'|'rows';
 export interface PresentStats {changedPixels:number;renderedFrames?:number;renderMs?:number;commitLatencyMs?:number}
 
 // Pixel (little-endian ABGR as a Uint32, alpha masked off) -> "#rrggbb". DOOM produces
@@ -43,16 +39,15 @@ function cssColor(rgb:number):string {
     return css;
 }
 
+// What the state-driven views (rows, pixels) get from the presenter. Each row or pixel
+// component registers its own state setter under its index; the presenter calls a
+// setter only for frames in which that row or pixel changed.
 interface FrameStore {
-    subscribe:(listener:()=>void)=>()=>void;                       // whole-frame subscribers (rows, pixels)
-    subscribePixel:(index:number,sink:(color:string)=>void)=>()=>void; // per-pixel sinks, called only when that pixel changed
-    getSnapshot:()=>number;                                         // frame counter
-    colorAt:(index:number)=>string;
-    pixels:()=>Uint32Array|null;
+    subscribe:(index:number,sink:(value:never)=>void)=>()=>void; // sink is the component's state setter
     width:number;height:number;
 }
 
-// ---- rows ------------------------------------------------------------------
+// ---- rows (one stateful component per scanline; React commits every change) --
 function rowGradient(pixels:Uint32Array,rowStart:number,width:number):string {
     const stops:string[]=[],unit=100/width;
     let runColor=pixels[rowStart]&0xffffff,runStart=0;
@@ -63,48 +58,67 @@ function rowGradient(pixels:Uint32Array,rowStart:number,width:number):string {
     stops.push(`${cssColor(runColor)} ${runStart*unit}% 100%`);
     return `linear-gradient(90deg,${stops.join(',')})`;
 }
-const Row=memo(function Row({background}:{background:string}){
+function Row({store,y}:{store:FrameStore;y:number}){
+    const [background,setBackground]=useState('');
+    // The presenter calls setBackground only for frames in which this scanline changed.
+    useEffect(()=>store.subscribe(y,setBackground),[store,y]);
     return <div className="screen-row" style={{background}}/>;
-});
+}
 function RowsView({store}:{store:FrameStore}){
-    const frame=useSyncExternalStore(store.subscribe,store.getSnapshot);
-    const pixels=store.pixels(),rows=[];
-    if(pixels)for(let y=0;y<store.height;y++)rows.push(<Row key={y} background={rowGradient(pixels,y*store.width,store.width)}/>);
-    return <div className="screen-surface screen-rows" data-frame={frame}>{rows}</div>;
+    // Built once; later frames reach rows through their state setters.
+    const rows=new Array(store.height);
+    for(let y=0;y<store.height;y++)rows[y]=<Row key={y} store={store} y={y}/>;
+    return <div className="screen-surface screen-rows">{rows}</div>;
 }
 
-// ---- pixels ----------------------------------------------------------------
-const Pixel=memo(function Pixel({color}:{color:string}){
+// ---- pixels-individual (one stateful component per pixel) ---------------------
+function Pixel({store,index}:{store:FrameStore;index:number}){
+    const [color,setColor]=useState('');
+    // The presenter calls setColor only for frames in which this pixel changed.
+    useEffect(()=>store.subscribe(index,setColor),[store,index]);
     return <div className="screen-pixel" style={{backgroundColor:color}}/>;
-});
-function PixelsView({store}:{store:FrameStore}){
-    const frame=useSyncExternalStore(store.subscribe,store.getSnapshot);
-    const count=store.width*store.height,items=new Array(count);
-    for(let i=0;i<count;i++)items[i]=<Pixel key={i} color={store.colorAt(i)}/>;
-    const style={gridTemplateColumns:`repeat(${store.width},1fr)`,gridTemplateRows:`repeat(${store.height},1fr)`};
-    return <div className="screen-surface screen-pixels" data-frame={frame} style={style}>{items}</div>;
 }
-
-// ---- pixels-ref ------------------------------------------------------------
-function RefPixel({store,index}:{store:FrameStore;index:number}){
-    const ref=useRef<HTMLDivElement>(null);
-    useEffect(()=>store.subscribePixel(index,color=>{if(ref.current)ref.current.style.backgroundColor=color;}),[store,index]);
-    return <div ref={ref} className="screen-pixel" style={{backgroundColor:store.colorAt(index)}}/>;
-}
-const PixelRow=memo(function PixelRow({store,y}:{store:FrameStore;y:number}){
+const IndividualRow=memo(function IndividualRow({store,y}:{store:FrameStore;y:number}){
     const items=new Array(store.width);
-    for(let x=0;x<store.width;x++)items[x]=<RefPixel key={x} store={store} index={y*store.width+x}/>;
+    for(let x=0;x<store.width;x++)items[x]=<Pixel key={x} store={store} index={y*store.width+x}/>;
     return <div className="screen-pixel-row">{items}</div>;
 });
-function RefPixelsView({store}:{store:FrameStore}){
-    // Rendered exactly once. Every later frame is delivered pixel by pixel through subscribePixel.
+function IndividualPixelsView({store}:{store:FrameStore}){
+    // Built once; rows never re-render, so React only walks into rows with pending updates.
+    const rows=new Array(store.height);
+    for(let y=0;y<store.height;y++)rows[y]=<IndividualRow key={y} store={store} y={y}/>;
+    return <div className="screen-surface screen-pixel-rows">{rows}</div>;
+}
+
+// ---- pixels-rows (64,000 pixel elements, state held per row) ------------------
+// Each row component holds its 320 colours in React state. The presenter diffs the frame
+// and calls the setter of every row that changed, so React re-renders that row and
+// reconciles its 320 pixel elements individually. Pixel elements come from a per-colour
+// cache: an unchanged pixel receives the very same element object as last time and React
+// bails out of it by identity, while changed ones update as usual. Compared with one
+// setState per pixel this trades ~40,000 scheduled updates for ~200, about 30% more
+// committed frames, and React still owns every pixel's DOM node.
+const pixelElementCache=new Map<string,React.JSX.Element>();
+function pixelElement(color:string):React.JSX.Element {
+    let el=pixelElementCache.get(color);
+    if(!el){el=<div className="screen-pixel" style={{backgroundColor:color}}/>;pixelElementCache.set(color,el);}
+    return el;
+}
+function PixelRow({store,y}:{store:FrameStore;y:number}){
+    const [colors,setColors]=useState<string[]|null>(null);
+    // The presenter calls setColors only for frames in which this row changed.
+    useEffect(()=>store.subscribe(y,setColors),[store,y]);
+    return <div className="screen-pixel-row">{colors?colors.map(pixelElement):null}</div>;
+}
+function PixelsView({store}:{store:FrameStore}){
+    // Built once; later frames reach rows through their state setters.
     const rows=new Array(store.height);
     for(let y=0;y<store.height;y++)rows[y]=<PixelRow key={y} store={store} y={y}/>;
     return <div className="screen-surface screen-pixel-rows">{rows}</div>;
 }
 
 // ---- declarative -----------------------------------------------------------
-interface ScreenGeometry {width:number;height:number;lossy?:LossyOptions}
+interface ScreenGeometry {width:number;height:number}
 const ScreenContext=createContext<ScreenGeometry>({width:320,height:200});
 interface Run {width:number;color:string}
 function runsOf(row:Uint32Array):Run[] {
@@ -132,35 +146,6 @@ function runElement(run:Run,screenWidth:number):React.JSX.Element {
     }
     return element;
 }
-// Lossy run-length encoding. Pass 1: a pixel joins the current run while its colour is
-// within `tolerance` (RGB distance) of the run's first colour, which collapses texture
-// noise. Pass 2: runs narrower than `minWidth` are absorbed by whichever neighbour is
-// closer in colour, but only if that neighbour is within 2x tolerance: a one-pixel run
-// that contrasts sharply with both sides (status bar digits, thin edges) is detail,
-// not noise, and is kept. Fewer runs means fewer spans for React and the browser.
-function colorDistanceSq(a:number,b:number):number {
-    const dr=(a&0xff)-(b&0xff),dg=((a>>8)&0xff)-((b>>8)&0xff),db=((a>>16)&0xff)-((b>>16)&0xff);
-    return dr*dr+dg*dg+db*db;
-}
-function runsOfLossy(row:Uint32Array,{tolerance,minWidth}:LossyOptions):Run[] {
-    const tolSq=tolerance*tolerance,raw:{width:number;color:number}[]=[];
-    let color=row[0]&0xffffff,start=0;
-    for(let x=1;x<row.length;x++){
-        const c=row[x]&0xffffff;
-        if(c!==color&&colorDistanceSq(c,color)>tolSq){raw.push({width:x-start,color});color=c;start=x;}
-    }
-    raw.push({width:row.length-start,color});
-    const merged:{width:number;color:number}[]=[];
-    for(let i=0;i<raw.length;i++){
-        const run=raw[i],prev=merged[merged.length-1],next=raw[i+1];
-        if(run.width<minWidth&&(prev||next)){
-            const dPrev=prev?colorDistanceSq(run.color,prev.color):Infinity,dNext=next?colorDistanceSq(run.color,next.color):Infinity;
-            if(Math.min(dPrev,dNext)<=tolSq*4){if(dNext<dPrev)next.width+=run.width;else prev.width+=run.width;continue;}
-        }
-        merged.push(run);
-    }
-    return merged.map(r=>({width:r.width,color:cssColor(r.color)}));
-}
 function rowsEqual(a:{row:Uint32Array},b:{row:Uint32Array}):boolean {
     const x=a.row,y=b.row;
     if(x.length!==y.length)return false;
@@ -171,8 +156,8 @@ function rowsEqual(a:{row:Uint32Array},b:{row:Uint32Array}):boolean {
 // would otherwise re-render every scanline; comparing the 320 ints lets unchanged
 // scanlines keep their committed spans untouched.
 const Scanline=memo(function Scanline({row}:{row:Uint32Array}){
-    const {width,lossy}=useContext(ScreenContext);
-    const spans=useMemo(()=>(lossy?runsOfLossy(row,lossy):runsOf(row)).map(run=>runElement(run,width)),[row,width,lossy]);
+    const {width}=useContext(ScreenContext);
+    const spans=useMemo(()=>runsOf(row).map(run=>runElement(run,width)),[row,width]);
     return <div className="screen-scanline">{spans}</div>;
 },rowsEqual);
 function DeclarativeScreen({frame,pixels,onCommit}:{frame:number;pixels:Uint32Array;onCommit:()=>void}){
@@ -185,7 +170,7 @@ function DeclarativeScreen({frame,pixels,onCommit}:{frame:number;pixels:Uint32Ar
     return <div className="screen-surface screen-declarative" data-frame={frame}>{rows}</div>;
 }
 
-const VIEWS:Record<Exclude<ReactStrategy,'dom-pixels'|'declarative'|'declarative-lossy'>,(props:{store:FrameStore})=>React.JSX.Element>={rows:RowsView,pixels:PixelsView,'pixels-ref':RefPixelsView};
+const VIEWS:Record<'rows'|'pixels-individual'|'pixels-rows',(props:{store:FrameStore})=>React.JSX.Element>={rows:RowsView,'pixels-individual':IndividualPixelsView,'pixels-rows':PixelsView};
 
 export class ReactPresenter implements Presenter {
     constructor(private strategy:ReactStrategy='rows'){}
@@ -195,60 +180,81 @@ export class ReactPresenter implements Presenter {
     private root:Root|null=null;
     private frame=0;
     private pixels:Uint32Array|null=null;
-    private previous:Uint32Array|null=null;                      // last frame delivered per pixel (pixels-ref, dom-pixels)
-    private listeners=new Set<()=>void>();
-    private pixelSinks:Array<((color:string)=>void)|null>|null=null; // pixels-ref
-    private domPixels:HTMLElement[]|null=null;                     // dom-pixels
+    private previous:Uint32Array|null=null;                      // last frame delivered (rows, pixels)
+    private sinks:Array<((value:never)=>void)|null>|null=null;    // state setters by row or pixel index
 
     mount(host:HTMLElement,width:number,height:number):void {
         this.host=host;
         this.container=document.createElement('div');this.container.className='screen-react-root';
         host.appendChild(this.container);
-        // One element per pixel only looks right when each pixel is a whole number of
-        // device pixels, so lock the host to 2x (640x400) for every per-pixel strategy.
+        // Scanlines and pixels are compositor layers in every strategy except rows, and a
+        // layer edge on a fractional device pixel shows as a seam. Lock the host to 2x
+        // (640x400) so each of the 200 rows is exactly two device pixels tall.
         if(this.strategy!=='rows')host.classList.add('square-pixels');
-        if(this.strategy==='dom-pixels'){this.mountDom(width,height);return;}
-        if(this.strategy==='declarative'||this.strategy==='declarative-lossy'){
-            const lossy=this.strategy==='declarative-lossy'?((window as unknown as {doomLossyOptions?:LossyOptions}).doomLossyOptions??{tolerance:32,minWidth:2}):undefined;
-            this.geometry={width,height,lossy};this.stats.renderedFrames=0;this.root=createRoot(this.container);return;} // first root.render happens in present()
-        if(this.strategy==='pixels-ref')this.pixelSinks=new Array(width*height).fill(null);
+        this.geometry={width,height};
+        if(this.strategy==='declarative'){
+            this.stats.renderedFrames=0;this.root=createRoot(this.container);return;} // first root.render happens in present()
+        this.sinks=new Array(this.strategy==='pixels-individual'?width*height:height).fill(null);
+        this.stats.renderedFrames=0;
         const store:FrameStore={
-            subscribe:listener=>{this.listeners.add(listener);return()=>this.listeners.delete(listener);},
-            subscribePixel:(index,sink)=>{this.pixelSinks![index]=sink;return()=>{if(this.pixelSinks)this.pixelSinks[index]=null;};},
-            getSnapshot:()=>this.frame,pixels:()=>this.pixels,width,height,
-            colorAt:index=>cssColor(this.pixels?this.pixels[index]&0xffffff:0),
+            subscribe:(index,sink)=>{this.sinks![index]=sink;return()=>{if(this.sinks)this.sinks[index]=null;};},
+            width,height,
         };
         const View=VIEWS[this.strategy];
         this.root=createRoot(this.container);
-        flushSync(()=>this.root!.render(<View store={store}/>));
+        // The Profiler counts commits so state-driven modes report React-committed fps too.
+        flushSync(()=>this.root!.render(<Profiler id="screen" onRender={this.onStateCommit}><View store={store}/></Profiler>));
     }
     present(frame:Uint8ClampedArray<ArrayBuffer>):void {
         if(!this.container)return;
         if(!this.pixels||this.pixels.buffer!==frame.buffer)this.pixels=new Uint32Array(frame.buffer,frame.byteOffset,frame.byteLength>>2);
         this.frame++;
         switch(this.strategy){
-            case 'declarative':case 'declarative-lossy':this.renderDeclarative();return;
-            case 'dom-pixels':this.deliverChanged(this.domSink);return;
-            case 'pixels-ref':this.deliverChanged(this.refSink);return;
-            default:
-                // flushSync commits synchronously inside the engine's frame, mirroring putImageData's timing.
-                flushSync(()=>{for(const listener of this.listeners)listener();});
+            case 'declarative':this.renderDeclarative();return;
+            // Every setter call schedules a React update; flushSync makes React render and
+            // commit all of them before present() returns, so the frame is on screen when the
+            // engine's animation callback ends.
+            // rows: ~200 cheap updates, committed synchronously before present() returns.
+            case 'rows':flushSync(()=>this.deliverRows(false));return;
+            // pixels: up to 200 row updates that each reconcile 320 pixel elements. Delivered as
+            // a transition so React time-slices the work and yields to the engine loop; the game
+            // stays responsive at ~50 fps while React commits ~9-10 frames/s turning. flushSync
+            // measured about the same commit rate but stalled the whole page to it.
+            case 'pixels-rows':startTransition(()=>this.deliverRows(true));return;
+            case 'pixels-individual':startTransition(()=>this.deliverPixels());return;
         }
     }
-    // Diff against the previously delivered frame and hand only the changed pixels to
-    // `sink`. Unchanged pixels never hear about the frame: no callback, no render.
-    private deliverChanged(sink:(index:number,color:string)=>void):void {
-        const pixels=this.pixels!;
-        if(!this.previous){
-            // First frame after mount: the mount already rendered it (React) or needs every pixel (DOM).
-            this.previous=new Uint32Array(pixels.length).fill(this.strategy==='dom-pixels'?0xffffffff:0);
-            if(this.strategy==='pixels-ref'){for(let i=0;i<pixels.length;i++)this.previous[i]=pixels[i]&0xffffff;this.stats.changedPixels=pixels.length;return;}
-        }
-        const previous=this.previous;let changed=0;
+    // Delivery diffs against the last delivered frame and calls setters only for what
+    // changed. Unchanged rows and pixels never hear about the frame: no setState, no render. Components mount before any frame arrives, so the history is seeded with a
+    // value no 24-bit colour can equal and the first present delivers everything.
+    private onStateCommit=(_id:string,_phase:string,actualDuration:number):void=>{
+        this.stats.renderedFrames=(this.stats.renderedFrames??0)+1;
+        this.stats.renderMs=this.stats.renderMs===undefined?actualDuration:this.stats.renderMs*0.9+actualDuration*0.1;
+    };
+    private history():Uint32Array {
+        if(!this.previous)this.previous=new Uint32Array(this.pixels!.length).fill(0xffffffff);
+        return this.previous;
+    }
+    private deliverPixels():void {
+        const pixels=this.pixels!,previous=this.history(),sinks=this.sinks!;let changed=0;
         for(let i=0;i<pixels.length;i++){
             const c=pixels[i]&0xffffff;
             if(c===previous[i])continue;
-            previous[i]=c;changed++;sink(i,cssColor(c));
+            previous[i]=c;changed++;const sink=sinks[i] as ((color:string)=>void)|null;if(sink)sink(cssColor(c));
+        }
+        this.stats.changedPixels=changed;
+    }
+    // Hand each changed row to its component: as a colour array (pixels-rows) or a gradient (rows).
+    private deliverRows(asColors:boolean):void {
+        const pixels=this.pixels!,previous=this.history(),sinks=this.sinks!,{width,height}=this.geometry;let changed=0;
+        for(let y=0;y<height;y++){
+            const start=y*width;let same=true;
+            for(let x=0;x<width;x++){if((pixels[start+x]&0xffffff)!==previous[start+x]){same=false;break;}}
+            if(same)continue;
+            for(let x=0;x<width;x++)previous[start+x]=pixels[start+x]&0xffffff;
+            changed++;const sink=sinks[y] as ((value:string|string[])=>void)|null;if(!sink)continue;
+            if(asColors){const colors=new Array<string>(width);for(let x=0;x<width;x++)colors[x]=cssColor(pixels[start+x]&0xffffff);sink(colors);}
+            else sink(rowGradient(pixels,start,width));
         }
         this.stats.changedPixels=changed;
     }
@@ -287,17 +293,8 @@ export class ReactPresenter implements Presenter {
         // flushSync measured the same React fps while turning but stalled the engine to match.
         startTransition(()=>this.root!.render(element));
     }
-    private refSink=(index:number,color:string):void=>{const sink=this.pixelSinks![index];if(sink)sink(color);};
-    private domSink=(index:number,color:string):void=>{this.domPixels![index].style.backgroundColor=color;};
-    private mountDom(width:number,height:number):void {
-        const surface=document.createElement('div');surface.className='screen-surface screen-pixels';
-        surface.style.gridTemplateColumns=`repeat(${width},1fr)`;surface.style.gridTemplateRows=`repeat(${height},1fr)`;
-        const count=width*height,fragment=document.createDocumentFragment();this.domPixels=new Array(count);
-        for(let i=0;i<count;i++){const el=document.createElement('div');el.className='screen-pixel';fragment.appendChild(el);this.domPixels[i]=el;}
-        surface.appendChild(fragment);this.container!.appendChild(surface);
-    }
     dispose():void {
-        this.host?.classList.remove('square-pixels');this.root?.unmount();this.container?.remove();this.listeners.clear();
-        this.host=null;this.root=null;this.container=null;this.pixels=null;this.previous=null;this.pixelSinks=null;this.domPixels=null;
+        this.host?.classList.remove('square-pixels');this.root?.unmount();this.container?.remove();
+        this.host=null;this.root=null;this.container=null;this.pixels=null;this.previous=null;this.sinks=null;
     }
 }

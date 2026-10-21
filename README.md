@@ -132,46 +132,54 @@ Los trucos de `ST_Responder` funcionan escribiéndolos con la pantalla enfocada:
 
 ## React presenter POC (branch `react-presenter`)
 
-`src/linuxdoom-1.10/i_video.ts` no longer draws to a canvas directly. `I_FinishUpdate`
+`src/linuxdoom-1.10/i_video.ts` no longer draws to a canvas. `I_FinishUpdate`
 converts `screens[0]` through the palette into an RGBA frame and hands it to a
 swappable `Presenter` (`mount` / `present` / `dispose`). The `#screen` element is
 a plain focusable `<div>` that only provides keyboard focus, pointer lock and
-fullscreen; the presenter owns whatever DOM it draws with.
+fullscreen; the presenter owns whatever DOM it draws with. All presenters live in
+`src/web/presenters/react-presenter.tsx` and use React 19:
 
-- `src/web/presenters/canvas-presenter.ts` – the original `putImageData` path.
-- `src/web/presenters/react-presenter.tsx` – React 19, six strategies:
-  - **rows**: 200 scanline `<div>`s with run-length-encoded `linear-gradient`
-    backgrounds. React reconciles 200 style strings per frame. Playable, 100+ fps.
-  - **declarative**: the most React-idiomatic version. Each frame is an immutable
-    snapshot passed top-down as props via `root.render` inside `startTransition`,
-    so React time-slices the render and drops stale frames itself. Scanlines are
-    `memo` components with a content comparator; each renders one keyed `<span>`
-    per colour run, so the reconciler diffs the image. Context carries geometry.
-    Tuned with: shared immutable run elements (React bails out on identical element
-    objects), a layout-effect commit handoff, scanlines as compositor layers with
-    `contain:strict`, and the `react-dom/profiling` build so `<Profiler>` reports
-    render time in production. 120 fps idle, ~40 fps walking, ~10 fps turning; the
-    game keeps ticking at 35 Hz because the transition yields to the engine loop.
-    The ceiling is the browser styling, laying out and painting 30-50k spans.
-  - **declarative-lossy**: the declarative renderer with lossy run merging. A pixel
-    joins the current run while within an RGB distance (tolerance 32) of the run's
-    first colour, and runs narrower than 2 px are absorbed by the closer-coloured
-    neighbour, but only when that neighbour is within 2x tolerance, so one-pixel
-    high-contrast detail (status bar digits, edges) survives. Spans drop from ~35k
-    to ~7k while turning and the frame rate goes from ~10 to ~115 fps. Tolerance
-    alone smears textures at 48+; unguarded min-width destroys the HUD. Override
-    via `window.doomLossyOptions={tolerance,minWidth}` before selecting it.
-  - **pixels**: 64,000 `<div>`s, parent re-renders every frame, memo skips unchanged
-    pixels. The literal version. ~10 fps while moving.
-  - **pixels-ref**: 64,000 `<div>`s under 200 row components. The presenter diffs
-    the frame and only notifies changed pixels; each pixel writes its colour to its
-    own node through a ref, so React is not in the per-frame loop. Rows are
-    compositor layers. 120 fps idle, ~14 fps turning. The limit is the browser
-    repainting 64,000 boxes, not React.
-  - **dom-pixels**: the same 64,000 `<div>`s written directly with no React, as the
-    floor for comparison.
+- **declarative**: the most React-idiomatic version. Each frame is an
+  immutable snapshot passed top-down as props via `root.render` inside
+  `startTransition`, so React time-slices the render and drops stale frames
+  itself. Scanlines are `memo` components with a content comparator; each renders
+  one keyed `<span>` per colour run, so the reconciler diffs the image. Tuned
+  with shared immutable run elements (React bails out on identical element
+  objects), a layout-effect commit handoff, scanlines as compositor layers with
+  `contain:strict`, and the `react-dom/profiling` build so `<Profiler>` reports
+  render time in production. ~120 fps idle, ~40 fps walking, ~10 fps turning;
+  the game keeps ticking at 35 Hz because the transition yields to the engine.
+  The ceiling is the browser styling, laying out and painting 30-50k spans.
+- **rows**: 200 scanline `<div>`s, each a component holding its background in
+  React state: a run-length-encoded `linear-gradient`. The presenter diffs rows
+  and calls the setters of changed rows inside `flushSync`; React renders and
+  commits them. 120 fps everywhere.
+- **pixels-individual** (default): 64,000 pixel `<div>`s, each a component holding its
+  colour in React state. The presenter diffs the frame and calls the setter of
+  every changed pixel inside a transition, about 40,000 scheduled updates per
+  frame while turning. ~6-8 commits/s turning.
+- **pixels-rows**: the same 64,000 pixel `<div>`s, but the 200 row components
+  hold the colours. The presenter calls the setter of every changed row; React
+  re-renders that row, reconciles its 320 pixel elements individually and bails
+  out of unchanged ones by element identity (pixel elements come from a
+  per-colour cache). About 200 scheduled updates per frame. ~9-10 commits/s
+  turning with the game loop at ~50 fps.
 
-The **Renderer** dropdown in the display footer hot-swaps presenters mid-game;
-the readout shows fps, `present()` time per frame and changed pixels. Judge speed
-on a production build (`npm run build && npx vite preview`): development-mode
-React is about 4x slower on the per-pixel strategies.
+A note on frame rates: the simulation ticks at 35 Hz, so the screen only
+changes 35 times a second and 35 React commits per second is the ceiling that
+matters. The "fps" in the readout is how often the engine hands over a frame,
+"react fps" is how often React committed a changed one.
+
+Earlier iterations that were measured and removed: a lossy declarative variant that
+merged near-identical runs (115 fps turning, but visibly smeared textures), the original canvas
+`putImageData` presenter (120 fps, the baseline), a naive per-pixel version
+where the parent re-rendered all 64,000 memoized pixels (~10 fps), per-pixel
+`useSyncExternalStore` subscriptions (~9 fps), a ref-write per-pixel version that
+bypassed React's reconciler (~14 fps), and a no-React per-pixel floor (~14 fps).
+The gap between the state-driven and ref-write per-pixel versions is React's
+per-update cost; the rest is the browser repainting 64,000 boxes.
+
+The **Renderer** dropdown hot-swaps presenters mid-game; the readout under the
+screen shows fps, React-committed fps, Profiler render time and changed pixels.
+Judge speed on a production build (`npm run build && npx vite preview`):
+development-mode React is about 4x slower on the per-pixel strategy.

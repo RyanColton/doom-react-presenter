@@ -12,14 +12,12 @@ header{padding:28px 0 18px}
 .screen-host:fullscreen{width:100vw;height:100vh;max-width:none;background:#000;display:grid;place-items:center}
 .screen-host:fullscreen>*{width:auto;height:100%;aspect-ratio:4/3}
 .screen-surface{display:block;width:100%;height:100%}
-.screen-canvas{image-rendering:pixelated}
 .screen-react-root{width:100%;height:100%}
 .screen-rows{display:flex;flex-direction:column}
 .screen-row{width:100%;flex:1 1 0;min-height:0}
 .screen-declarative{display:flex;flex-direction:column}
 .screen-scanline{display:flex;flex:1 1 0;min-height:0;will-change:transform;contain:strict}
 .screen-run{flex:none;min-width:0}
-.screen-pixels{display:grid}
 .screen-pixel{min-width:0;min-height:0}
 .screen-pixel-rows{display:flex;flex-direction:column}
 .screen-pixel-row{display:flex;flex:1 1 0;min-height:0;will-change:transform}

@@ -10,7 +10,6 @@ import { S_Init,S_StartSound,S_StopSound,S_SetSfxVolume,S_SetMusicVolume,S_GetMu
 import { S_sfx } from '../linuxdoom-1.10/sounds';
 import { V_Init, V_DrawPatch, V_PatchHeader, V_SetGamma, usegamma, screens } from '../linuxdoom-1.10/v_video';
 import { I_InitGraphics, I_SetPalette, I_FinishUpdate, I_ShutdownGraphics, I_SetPresenter, type Presenter } from '../linuxdoom-1.10/i_video';
-import { CanvasPresenter } from './presenters/canvas-presenter';
 import { ReactPresenter } from './presenters/react-presenter';
 import { W_InitMultipleFiles, W_CacheLumpName, W_CheckNumForName, W_NumLumps } from '../linuxdoom-1.10/w_wad';
 import { wipe_StartScreen, wipe_EndScreen, wipe_ScreenWipe } from '../linuxdoom-1.10/f_wipe';
@@ -73,7 +72,7 @@ const presentStats={presentMs:0,frames:0,changedPixels:0,renderedFrames:-1,rende
 function timed(inner:Presenter):Presenter {
     return {mount:(h,w,ht)=>inner.mount(h,w,ht),dispose:()=>inner.dispose(),present:f=>{const t=performance.now();inner.present(f);const ms=performance.now()-t;presentStats.presentMs=presentStats.frames===0?ms:presentStats.presentMs*0.9+ms*0.1;presentStats.frames++;const withStats=activePresenter as unknown as {stats?:{changedPixels:number;renderedFrames?:number;renderMs?:number;commitLatencyMs?:number}};if(withStats?.stats){presentStats.changedPixels=withStats.stats.changedPixels;presentStats.renderedFrames=withStats.stats.renderedFrames??-1;presentStats.renderMs=withStats.stats.renderMs??-1;presentStats.commitLatencyMs=withStats.stats.commitLatencyMs??-1;}}};
 }
-const PRESENTERS:Record<string,()=>Presenter>={'react-rows':()=>new ReactPresenter('rows'),'react-declarative':()=>new ReactPresenter('declarative'),'react-declarative-lossy':()=>new ReactPresenter('declarative-lossy'),'react-pixels-ref':()=>new ReactPresenter('pixels-ref'),'react-pixels':()=>new ReactPresenter('pixels'),'dom-pixels':()=>new ReactPresenter('dom-pixels'),canvas:()=>new CanvasPresenter()};
+const PRESENTERS:Record<string,()=>Presenter>={'react-pixels-individual':()=>new ReactPresenter('pixels-individual'),'react-pixels-rows':()=>new ReactPresenter('pixels-rows'),'react-declarative':()=>new ReactPresenter('declarative'),'react-rows':()=>new ReactPresenter('rows')};
 const rendererSelect=element<HTMLSelectElement>('renderer'),presentStatsLabel=element('present-stats');
 function selectPresenter(name:string):void {const make=PRESENTERS[name];if(!make)throw new Error(`Renderer desconocido: ${name}`);presentStats.presentMs=0;presentStats.frames=0;presentStats.changedPixels=0;presentStats.renderedFrames=-1;activePresenter=make();I_SetPresenter(timed(activePresenter));}
 selectPresenter(rendererSelect.value);
@@ -84,7 +83,7 @@ setInterval(()=>{
     // Presenters that let React schedule asynchronously report how many frames React actually committed.
     const rendered=presentStats.renderedFrames>=0?` · react ${((presentStats.renderedFrames-fpsRendered)/seconds).toFixed(0)} fps${presentStats.renderMs>=0?` · render ${presentStats.renderMs.toFixed(1)} ms`:''}${presentStats.commitLatencyMs>=0?` · react total ${presentStats.commitLatencyMs.toFixed(1)} ms`:''}`:'';
     fpsFrames=presentStats.frames;fpsRendered=Math.max(0,presentStats.renderedFrames);fpsTime=now;
-    presentStatsLabel.textContent=presentStats.frames?`${fps.toFixed(0)} fps${rendered} · present ${presentStats.presentMs.toFixed(2)} ms${presentStats.changedPixels?` · ${presentStats.changedPixels} px changed`:''}`:'';
+    presentStatsLabel.textContent=presentStats.frames?`${fps.toFixed(0)} fps${rendered} · present ${presentStats.presentMs.toFixed(2)} ms${presentStats.changedPixels?` · ${presentStats.changedPixels} changed`:''}`:'';
 },500);
 (window as unknown as {doomPresentStats:typeof presentStats}).doomPresentStats=presentStats;
 const worldPreview = new WorldPreview(() => { lastView = screens[0].slice(); }, error => report(error instanceof Error ? error.message : String(error),true));
