@@ -12,7 +12,7 @@ frame gets onto the page. The engine still rasterizes every frame into its
 320x200 screen buffer exactly as DOOM did in 1993; instead of copying that
 buffer into a `<canvas>`, it is handed to React, which turns it into DOM.
 
-Play it: **https://ryancolton.github.io/doomJavascript/**. The page downloads
+Play it: **https://ryancolton.github.io/ReactDOOM/**. The page downloads
 the shareware WAD itself. Pick a map, press Play, click the screen, and switch
 renderers from the dropdown while playing.
 

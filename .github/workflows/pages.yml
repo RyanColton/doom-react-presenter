@@ -1,8 +1,8 @@
 name: Verify, build and publish the site
 
 # This repository is private, so it cannot serve GitHub Pages on a free plan.
-# The build is pushed to the public RyanColton/doomJavascript repository,
-# which serves https://ryancolton.github.io/doomJavascript/ from its main branch.
+# The build is pushed to the public RyanColton/ReactDOOM repository,
+# which serves https://ryancolton.github.io/ReactDOOM/ from its main branch.
 
 on:
   push:
@@ -40,7 +40,7 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}
-          external_repository: RyanColton/doomJavascript
+          external_repository: RyanColton/ReactDOOM
           publish_branch: main
           publish_dir: ./dist
           force_orphan: true

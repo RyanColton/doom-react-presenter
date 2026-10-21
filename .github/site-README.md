@@ -1,7 +1,7 @@
 # ReactDOOM
 
 The built, playable site for ReactDOOM, DOOM with its screen drawn by React:
-https://ryancolton.github.io/doomJavascript/
+https://ryancolton.github.io/ReactDOOM/
 
 This repository holds only the build output and is published automatically from
 the source repository. The engine is a TypeScript port of the original DOOM
