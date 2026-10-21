@@ -1,6 +1,6 @@
-# doom
+# ReactDOOM
 
-DOOM, with the screen drawn by React.
+DOOM, with the screen drawn by React. `react-dom`, one O further.
 
 The game engine is a TypeScript port of the original DOOM source,
 [kant003/doomJavascript](https://github.com/kant003/doomJavascript), which this
