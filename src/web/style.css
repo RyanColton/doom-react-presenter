@@ -22,7 +22,7 @@ header{padding:28px 0 18px}
 .screen-pixel-rows{display:flex;flex-direction:column}
 .screen-pixel-row{display:flex;flex:1 1 0;min-height:0;will-change:transform}
 .screen-pixel-row .screen-pixel{flex:1 1 0}
-/* Per-pixel modes lock the host to 640x400 so rows and pixels are whole device pixels. */
+/* Presenters whose rows are compositor layers lock the host to 640x400 so each row is a whole number of device pixels. */
 .screen-host.square-pixels{aspect-ratio:16/10}
 
 .controls-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;font:12px monospace;color:#9a9f8f}

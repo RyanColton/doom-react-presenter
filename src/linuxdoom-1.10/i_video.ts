@@ -1,16 +1,20 @@
 // Copyright (C) 1993-1996 id Software, Inc. GPL-2.0-only.
-// Browser platform implementation: replaces X11 indexed visual with an RGBA frame
-// handed to a swappable Presenter (Canvas, React, ...). The host element only
-// provides focus and pointer lock; the presenter owns whatever DOM it draws with.
+// Browser platform implementation. Each finished frame is converted from the 8-bit
+// screen to RGBA and handed to the installed Presenter, which owns the DOM it draws
+// with. The host element passed to I_InitGraphics only provides keyboard focus,
+// pointer lock and fullscreen.
 import { SCREENWIDTH, SCREENHEIGHT, KEY_RIGHTARROW, KEY_LEFTARROW, KEY_UPARROW, KEY_DOWNARROW,
     KEY_ESCAPE, KEY_ENTER, KEY_TAB, KEY_BACKSPACE, KEY_RSHIFT, KEY_RCTRL, KEY_RALT, KEY_PAUSE } from './doomdef.h';
 import { evtype_t } from './d_event.h';
 import type { event_t } from './d_event.h';
 import { screens, gammatable, usegamma } from './v_video';
 import { I_Error } from './i_system';
+// Displays frames. `mount` creates the presenter's DOM inside the host; `present` receives
+// the frame as RGBA bytes (width * height * 4) in a buffer that is reused for every frame,
+// so a presenter copies anything it needs after the call returns; `dispose` removes the DOM.
 export interface Presenter {
     mount(host: HTMLElement, width: number, height: number): void;
-    present(frame: Uint8ClampedArray<ArrayBuffer>): void; // RGBA, width*height*4, shared across frames
+    present(frame: Uint8ClampedArray<ArrayBuffer>): void;
     dispose(): void;
 }
 let host: HTMLElement | null = null;
@@ -69,7 +73,7 @@ export function I_SetPresenter(next: Presenter | null): void {
     presenter?.dispose();
     presenter = next;
     presenter?.mount(host, SCREENWIDTH, SCREENHEIGHT);
-    presenter?.present(frame); // show the last frame immediately, even while paused
+    presenter?.present(frame); // the new presenter shows the current frame at once
 }
 export function I_SetPalette(pal: Uint8Array): void {
     if (pal.length < 768) I_Error('PLAYPAL must contain at least 768 bytes');

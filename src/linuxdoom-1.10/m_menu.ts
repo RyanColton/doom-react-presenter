@@ -23,7 +23,7 @@ interface menuitem_t {status:number;name:string;routine:((choice:number)=>void)|
 interface menu_t {id:string;prevMenu:menu_t|null;menuitems:menuitem_t[];routine:()=>void;x:number;y:number;lastOn:number}
 let context:menu_context_t;
 export let menuactive=false,inhelpscreens=false,showMessages=true,detailLevel=0,screenblocks=10,screenSize=7,mouseSensitivity=5;
-export let snd_SfxVolume=15,snd_MusicVolume=15; // full volume by default in this fork (upstream: 10 and 8)
+export let snd_SfxVolume=15,snd_MusicVolume=15; // 0-15; both start at maximum
 let currentMenu:menu_t,itemOn=0,skullAnimCounter=10,whichSkull=0,epi=0;
 let messageToPrint=false,messageString='',messageLastMenuActive=false,messageNeedsInput=false,messageRoutine:((response:number)=>void)|null=null;
 let MainDef:menu_t,EpiDef:menu_t,NewDef:menu_t,OptionsDef:menu_t,SoundDef:menu_t,ReadDef1:menu_t,ReadDef2:menu_t;

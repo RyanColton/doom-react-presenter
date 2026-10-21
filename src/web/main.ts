@@ -65,25 +65,29 @@ let remoteController:AbortController|null=null;
 function cancelRemote():void {remoteController?.abort();remoteController=null;}
 let lastView = new Uint8Array(320 * 200), animation = 0;
 V_Init(); I_InitGraphics(screenHost);
-// Presenters are hot-swappable: the engine keeps writing screens[0], I_FinishUpdate
-// converts it to RGBA, and whichever presenter is mounted puts it on screen.
-// present() time is measured here so the two paths can be compared live.
-const presentStats={presentMs:0,frames:0,changedPixels:0,renderedFrames:-1,renderMs:-1,commitLatencyMs:-1};let activePresenter:Presenter|null=null;
-function timed(inner:Presenter):Presenter {
-    return {mount:(h,w,ht)=>inner.mount(h,w,ht),dispose:()=>inner.dispose(),present:f=>{const t=performance.now();inner.present(f);const ms=performance.now()-t;presentStats.presentMs=presentStats.frames===0?ms:presentStats.presentMs*0.9+ms*0.1;presentStats.frames++;const withStats=activePresenter as unknown as {stats?:{changedPixels:number;renderedFrames?:number;renderMs?:number;commitLatencyMs?:number}};if(withStats?.stats){presentStats.changedPixels=withStats.stats.changedPixels;presentStats.renderedFrames=withStats.stats.renderedFrames??-1;presentStats.renderMs=withStats.stats.renderMs??-1;presentStats.commitLatencyMs=withStats.stats.commitLatencyMs??-1;}}};
+// The screen is drawn by a Presenter chosen from the Renderer dropdown. Swapping one in
+// replaces the DOM under #screen while the engine keeps running. The readout under the
+// screen shows how often the engine hands over a frame, how often React commits one, and
+// how long each side takes.
+const presentStats={presentMs:0,frames:0,changed:0,renderedFrames:-1,renderMs:-1,commitLatencyMs:-1};let activePresenter:ReactPresenter|null=null;
+function timed(inner:ReactPresenter):Presenter {
+    return {mount:(h,w,ht)=>inner.mount(h,w,ht),dispose:()=>inner.dispose(),present:f=>{
+        const t=performance.now();inner.present(f);const ms=performance.now()-t;
+        presentStats.presentMs=presentStats.frames===0?ms:presentStats.presentMs*0.9+ms*0.1;presentStats.frames++;
+        presentStats.changed=inner.stats.changed;presentStats.renderedFrames=inner.stats.renderedFrames??-1;presentStats.renderMs=inner.stats.renderMs??-1;presentStats.commitLatencyMs=inner.stats.commitLatencyMs??-1;
+    }};
 }
-const PRESENTERS:Record<string,()=>Presenter>={'react-pixels-individual':()=>new ReactPresenter('pixels-individual'),'react-pixels-rows':()=>new ReactPresenter('pixels-rows'),'react-declarative':()=>new ReactPresenter('declarative'),'react-rows':()=>new ReactPresenter('rows')};
+const PRESENTERS:Record<string,()=>ReactPresenter>={'react-pixels-individual':()=>new ReactPresenter('pixels-individual'),'react-pixels-rows':()=>new ReactPresenter('pixels-rows'),'react-declarative':()=>new ReactPresenter('declarative'),'react-rows':()=>new ReactPresenter('rows')};
 const rendererSelect=element<HTMLSelectElement>('renderer'),presentStatsLabel=element('present-stats');
-function selectPresenter(name:string):void {const make=PRESENTERS[name];if(!make)throw new Error(`Renderer desconocido: ${name}`);presentStats.presentMs=0;presentStats.frames=0;presentStats.changedPixels=0;presentStats.renderedFrames=-1;activePresenter=make();I_SetPresenter(timed(activePresenter));}
+function selectPresenter(name:string):void {const make=PRESENTERS[name];if(!make)throw new Error(`Unknown renderer: ${name}`);presentStats.presentMs=0;presentStats.frames=0;presentStats.changed=0;presentStats.renderedFrames=-1;activePresenter=make();I_SetPresenter(timed(activePresenter));}
 selectPresenter(rendererSelect.value);
 rendererSelect.addEventListener('change',()=>{selectPresenter(rendererSelect.value);screenHost.focus();});
 let fpsFrames=0,fpsRendered=0,fpsTime=performance.now();
 setInterval(()=>{
     const now=performance.now(),seconds=(now-fpsTime)/1000,fps=(presentStats.frames-fpsFrames)/seconds;
-    // Presenters that let React schedule asynchronously report how many frames React actually committed.
     const rendered=presentStats.renderedFrames>=0?` · react ${((presentStats.renderedFrames-fpsRendered)/seconds).toFixed(0)} fps${presentStats.renderMs>=0?` · render ${presentStats.renderMs.toFixed(1)} ms`:''}${presentStats.commitLatencyMs>=0?` · react total ${presentStats.commitLatencyMs.toFixed(1)} ms`:''}`:'';
     fpsFrames=presentStats.frames;fpsRendered=Math.max(0,presentStats.renderedFrames);fpsTime=now;
-    presentStatsLabel.textContent=presentStats.frames?`${fps.toFixed(0)} fps${rendered} · present ${presentStats.presentMs.toFixed(2)} ms${presentStats.changedPixels?` · ${presentStats.changedPixels} changed`:''}`:'';
+    presentStatsLabel.textContent=presentStats.frames?`${fps.toFixed(0)} fps${rendered} · present ${presentStats.presentMs.toFixed(2)} ms${presentStats.changed?` · ${presentStats.changed} changed`:''}`:'';
 },500);
 (window as unknown as {doomPresentStats:typeof presentStats}).doomPresentStats=presentStats;
 const worldPreview = new WorldPreview(() => { lastView = screens[0].slice(); }, error => report(error instanceof Error ? error.message : String(error),true));
@@ -215,7 +219,7 @@ function render(): void {
         screens[0].fill(0);
         V_DrawPatch(Math.floor((320 - h.width) / 2) + h.leftoffset, Math.floor((200 - h.height) / 2) + h.topoffset, 0, patch);
         label.textContent = `${name} / PALETA ORIGINAL`;
-        element('frame-state').textContent = 'Framebuffer de 8 bits → Canvas';
+        element('frame-state').textContent = 'Framebuffer de 8 bits → React';
     }
     lastView = screens[0].slice(); I_FinishUpdate();
 }
